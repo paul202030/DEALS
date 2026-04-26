@@ -1,0 +1,16 @@
+# Sources for the deal tracker. Add or remove entries — no code changes needed.
+
+# RSS feeds from CRE trade publications. Most institutional deals show up
+# in 2-4 of these within hours of being announced.
+rss_feeds:
+  - https://www.bisnow.com/feed
+  - https://therealdeal.com/feed/
+  - https://commercialobserver.com/feed/
+  - https://www.globest.com/feed/
+  - https://www.multihousingnews.com/feed/
+  - https://www.connectcre.com/feed/
+  - https://rebusinessonline.com/feed/
+  - https://commercialsearch.com/news/feed/
+  - https://www.bisnow.com/national/news/capital-markets/feed
+  # Add your own. Press release wires (BusinessWire, PRNewswire) have
+  # category-specific feeds too — find them at the publisher's site.

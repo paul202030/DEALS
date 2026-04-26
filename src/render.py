@@ -1,0 +1,236 @@
+"""Render the deal database to a static HTML page for GitHub Pages.
+
+Pre-bakes all deals into the page as JSON; client-side JS handles
+sort/filter. No backend needed at view time.
+"""
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+OUTPUT = Path(__file__).resolve().parent.parent / "docs" / "index.html"
+
+
+def _fmt_price(p):
+    if not p:
+        return "—"
+    if p >= 1_000_000_000:
+        return f"${p / 1e9:.2f}B"
+    if p >= 1_000_000:
+        return f"${p / 1e6:.0f}M"
+    return f"${p:,}"
+
+
+def render_site(conn) -> None:
+    rows = conn.execute(
+        """
+        SELECT d.*,
+               GROUP_CONCAT(s.source_url, '|||') AS sources,
+               GROUP_CONCAT(s.source_type, '|||') AS source_types
+        FROM deals d
+        LEFT JOIN deal_sources s ON s.deal_id = d.id
+        GROUP BY d.id
+        ORDER BY COALESCE(d.announcement_date, d.first_seen) DESC
+        """
+    ).fetchall()
+
+    deals = []
+    for r in rows:
+        sources = (r["sources"] or "").split("|||") if r["sources"] else []
+        types = (r["source_types"] or "").split("|||") if r["source_types"] else []
+        deals.append(
+            {
+                "id": r["id"],
+                "buyer": r["buyer"],
+                "seller": r["seller"],
+                "asset": r["asset_name"],
+                "address": r["asset_address"],
+                "city": r["city"],
+                "state": r["state"],
+                "type": r["property_type"],
+                "price_usd": r["price_usd"],
+                "price_label": _fmt_price(r["price_usd"]),
+                "status": r["deal_status"],
+                "date": r["announcement_date"] or (r["first_seen"] or "")[:10],
+                "summary": r["raw_summary"],
+                "sources": list(zip(sources, types)),
+            }
+        )
+
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    html = (
+        _TEMPLATE
+        .replace("__DATA__", json.dumps(deals, ensure_ascii=False))
+        .replace("__UPDATED__", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+        .replace("__COUNT__", str(len(deals)))
+    )
+    OUTPUT.write_text(html, encoding="utf-8")
+
+
+_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>US institutional real estate deals</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --bg: #fafaf7; --card: #fff; --text: #1a1a1a; --muted: #6b6b6b;
+    --border: #e5e3dc; --accent: #2d4a8a; --hover: #f5f3ed;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1a1a1a; --card: #242421; --text: #e8e6df; --muted: #9c9a92;
+            --border: #353532; --accent: #7fa3d8; --hover: #2d2d2a; }
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         margin: 0; padding: 24px; background: var(--bg); color: var(--text); font-size: 14px; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
+  .meta { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px;
+             padding: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; }
+  .filters input, .filters select {
+    padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: 13px; font-family: inherit;
+  }
+  .filters input:focus, .filters select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .table-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--bg); cursor: pointer; user-select: none; font-weight: 500; font-size: 12px;
+       text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  th:hover { color: var(--text); }
+  th[data-sort="asc"]::after { content: " ↑"; }
+  th[data-sort="desc"]::after { content: " ↓"; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--hover); }
+  .price { font-weight: 500; white-space: nowrap; }
+  .summary { color: var(--muted); font-size: 12px; margin-top: 3px; max-width: 380px; line-height: 1.4; }
+  .seller { color: var(--muted); font-size: 11px; }
+  .badge { display: inline-block; padding: 2px 7px; background: var(--hover);
+           border-radius: 10px; font-size: 11px; color: var(--muted); }
+  .src { display: inline-block; margin-right: 6px; padding: 1px 6px;
+         background: var(--hover); border-radius: 3px; font-size: 11px;
+         color: var(--accent); text-decoration: none; }
+  .src:hover { background: var(--accent); color: white; }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<h1>US institutional real estate deals <span class="meta" id="count"></span></h1>
+<div class="meta">$20M+ • Updated __UPDATED__ • <a href="https://github.com" style="color:var(--accent)">source</a></div>
+
+<div class="filters">
+  <input id="q" placeholder="Search buyer, asset, city…" style="flex:1;min-width:200px">
+  <select id="type">
+    <option value="">All types</option>
+    <option>multifamily</option><option>office</option><option>industrial</option>
+    <option>retail</option><option>hotel</option><option>data_center</option>
+    <option>self_storage</option><option>sfr</option><option>mixed_use</option>
+    <option>land</option><option>healthcare</option><option>other</option>
+  </select>
+  <input id="state" placeholder="State" maxlength="2" style="width:70px;text-transform:uppercase">
+  <input id="minprice" placeholder="Min $M" type="number" style="width:90px">
+  <select id="status">
+    <option value="">Any status</option>
+    <option value="announced">Announced</option>
+    <option value="under_contract">Under contract</option>
+    <option value="closed">Closed</option>
+  </select>
+</div>
+
+<div class="table-wrap">
+<table id="t">
+  <thead><tr>
+    <th data-k="date">Date</th>
+    <th data-k="buyer">Buyer</th>
+    <th data-k="asset">Asset</th>
+    <th data-k="city">Location</th>
+    <th data-k="type">Type</th>
+    <th data-k="price_usd">Price</th>
+    <th data-k="status">Status</th>
+    <th>Sources</th>
+  </tr></thead>
+  <tbody id="tb"></tbody>
+</table>
+<div class="empty" id="empty" style="display:none">No deals match your filters.</div>
+</div>
+
+<script>
+const DATA = __DATA__;
+let sortKey = 'date'; let sortDir = -1;
+
+const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c =>
+  ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const fmtCity = d => [d.city, d.state].filter(Boolean).join(', ');
+const sourceLabel = (url, type) => {
+  try { const h = new URL(url).hostname.replace(/^www\./,''); return h.split('.')[0]; }
+  catch (e) { return type || 'src'; }
+};
+
+function row(d) {
+  const sources = (d.sources || []).map(([url, type]) =>
+    `<a class="src" href="${esc(url)}" target="_blank" rel="noopener">${esc(sourceLabel(url, type))}</a>`).join('');
+  const seller = d.seller ? `<div class="seller">from ${esc(d.seller)}</div>` : '';
+  const summary = d.summary ? `<div class="summary">${esc(d.summary)}</div>` : '';
+  return `<tr>
+    <td>${esc(d.date)}</td>
+    <td><strong>${esc(d.buyer)}</strong>${seller}</td>
+    <td>${esc(d.asset || '—')}${summary}</td>
+    <td>${esc(fmtCity(d) || '—')}</td>
+    <td>${d.type ? `<span class="badge">${esc(d.type)}</span>` : ''}</td>
+    <td class="price">${esc(d.price_label)}</td>
+    <td>${esc(d.status || '')}</td>
+    <td>${sources}</td>
+  </tr>`;
+}
+
+function render() {
+  const q = document.getElementById('q').value.toLowerCase().trim();
+  const type = document.getElementById('type').value;
+  const state = document.getElementById('state').value.toUpperCase().trim();
+  const minP = (parseFloat(document.getElementById('minprice').value) || 0) * 1e6;
+  const status = document.getElementById('status').value;
+
+  let rows = DATA.filter(d => {
+    if (type && d.type !== type) return false;
+    if (state && (d.state || '').toUpperCase() !== state) return false;
+    if (minP && (d.price_usd || 0) < minP) return false;
+    if (status && d.status !== status) return false;
+    if (q) {
+      const hay = [d.buyer, d.seller, d.asset, d.city, d.summary].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  rows.sort((a, b) => {
+    const av = a[sortKey] ?? ''; const bv = b[sortKey] ?? '';
+    if (av === bv) return 0;
+    return (av < bv ? -1 : 1) * sortDir;
+  });
+
+  document.getElementById('count').textContent = `(${rows.length} of ${DATA.length})`;
+  document.getElementById('tb').innerHTML = rows.map(row).join('');
+  document.getElementById('empty').style.display = rows.length === 0 ? 'block' : 'none';
+
+  document.querySelectorAll('th[data-k]').forEach(th => {
+    th.removeAttribute('data-sort');
+    if (th.getAttribute('data-k') === sortKey) {
+      th.setAttribute('data-sort', sortDir === 1 ? 'asc' : 'desc');
+    }
+  });
+}
+
+document.querySelectorAll('th[data-k]').forEach(th => {
+  th.addEventListener('click', () => {
+    const k = th.getAttribute('data-k');
+    if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = -1; }
+    render();
+  });
+});
+['q', 'type', 'state', 'minprice', 'status'].forEach(id =>
+  document.getElementById(id).addEventListener('input', render));
+render();
+</script>
+</body>
+</html>"""

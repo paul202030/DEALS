@@ -1,0 +1,67 @@
+name: Track deals
+
+on:
+  schedule:
+    # Every 6 hours. GitHub Actions free tier covers this easily:
+    # 4 runs/day × ~3 min × 30 = ~360 min/month, well under 2000-min free tier.
+    # Public repos: unlimited Actions minutes.
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write       # commit updated DB + rendered HTML
+  pages: write          # deploy to GitHub Pages
+  id-token: write       # required by deploy-pages action
+
+concurrency:
+  group: track-deals
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Optional: set your contact email for SEC EDGAR's UA requirement
+          EDGAR_UA: ${{ secrets.EDGAR_UA }}
+        run: python main.py
+
+      - name: Commit changes
+        run: |
+          git config user.name "deal-tracker-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/deals.db docs/index.html
+          if ! git diff --staged --quiet; then
+            git commit -m "Update deals $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          else
+            echo "No changes to commit."
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./docs
+
+  deploy:
+    needs: track
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
